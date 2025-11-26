@@ -89,7 +89,12 @@ def load_csv_data(file_path):
 
 def load_checkpoint(file_path, model_class):
     # 파일 경로에서 직접 로드
-    checkpoint = torch.load(file_path, map_location=DEVICE)
+    try:
+        checkpoint = torch.load(file_path, map_location=DEVICE)
+    except Exception as e:
+        st.error(f"모델 파일 로드 실패: {file_path}")
+        st.warning("파일이 손상되었거나 Git LFS 포인터일 수 있습니다.")
+        raise e
     
     input_dim = checkpoint['input_dim']
     scaler = CustomMinMaxScaler()
@@ -181,7 +186,15 @@ def main():
         
         # 참조 모델 파일 결정 (컬럼 매핑용)
         ref_path = CNN_MODEL_PATH if cnn_exists else ATTN_MODEL_PATH
-        temp_ckpt = torch.load(ref_path, map_location=DEVICE)
+        
+        try:
+            temp_ckpt = torch.load(ref_path, map_location=DEVICE)
+        except Exception as e:
+            st.error(f"모델 파라미터 로드 실패: {ref_path}")
+            st.error(f"Error Details: {e}")
+            st.warning("Tip: .pth 파일이 정상적인 바이너리 파일인지 확인하세요. (Git LFS Pointer일 가능성 있음)")
+            return
+
         feature_cols = temp_ckpt.get('feature_names', df.columns.tolist())
         
         # 데이터 슬라이싱
@@ -201,33 +214,39 @@ def main():
         
         # 1. CNN+LSTM
         if use_cnn and cnn_exists:
-            model, scaler, _, _ = load_checkpoint(CNN_MODEL_PATH, CNN_LSTM)
-            input_raw = input_df.values
-            input_scaled = scaler.transform(input_raw)
-            input_tensor = torch.tensor(input_scaled, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-            
-            with torch.no_grad():
-                pred_change = model(input_tensor).cpu().numpy().flatten()
-            
-            last_val_scaled = input_scaled[-1, 0] # 0번 컬럼 Target 가정
-            pred_val_scaled = pred_change + last_val_scaled
-            pred_final = scaler.inverse_transform_col(pred_val_scaled, 0)
-            results["CNN+LSTM"] = pred_final
+            try:
+                model, scaler, _, _ = load_checkpoint(CNN_MODEL_PATH, CNN_LSTM)
+                input_raw = input_df.values
+                input_scaled = scaler.transform(input_raw)
+                input_tensor = torch.tensor(input_scaled, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+                
+                with torch.no_grad():
+                    pred_change = model(input_tensor).cpu().numpy().flatten()
+                
+                last_val_scaled = input_scaled[-1, 0] # 0번 컬럼 Target 가정
+                pred_val_scaled = pred_change + last_val_scaled
+                pred_final = scaler.inverse_transform_col(pred_val_scaled, 0)
+                results["CNN+LSTM"] = pred_final
+            except Exception as e:
+                st.error(f"CNN+LSTM 예측 중 오류 발생: {e}")
 
         # 2. Attention LSTM
         if use_attn and attn_exists:
-            model, scaler, _, _ = load_checkpoint(ATTN_MODEL_PATH, AttentionLSTM)
-            input_raw = input_df.values
-            input_scaled = scaler.transform(input_raw)
-            input_tensor = torch.tensor(input_scaled, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-            
-            with torch.no_grad():
-                pred_change = model(input_tensor).cpu().numpy().flatten()
-            
-            last_val_scaled = input_scaled[-1, 0]
-            pred_val_scaled = pred_change + last_val_scaled
-            pred_final = scaler.inverse_transform_col(pred_val_scaled, 0)
-            results["Attention LSTM"] = pred_final
+            try:
+                model, scaler, _, _ = load_checkpoint(ATTN_MODEL_PATH, AttentionLSTM)
+                input_raw = input_df.values
+                input_scaled = scaler.transform(input_raw)
+                input_tensor = torch.tensor(input_scaled, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+                
+                with torch.no_grad():
+                    pred_change = model(input_tensor).cpu().numpy().flatten()
+                
+                last_val_scaled = input_scaled[-1, 0]
+                pred_val_scaled = pred_change + last_val_scaled
+                pred_final = scaler.inverse_transform_col(pred_val_scaled, 0)
+                results["Attention LSTM"] = pred_final
+            except Exception as e:
+                st.error(f"Attention LSTM 예측 중 오류 발생: {e}")
 
         # 결과 시각화
         st.subheader(f"📊 예측 결과 분석 ({predict_date} ~ +5일)")
