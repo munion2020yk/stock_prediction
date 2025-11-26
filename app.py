@@ -90,10 +90,12 @@ def load_csv_data(file_path):
 def load_checkpoint(file_path, model_class):
     # 파일 경로에서 직접 로드
     try:
-        checkpoint = torch.load(file_path, map_location=DEVICE)
+        # [수정] PyTorch 최신 버전 호환성을 위해 weights_only=False 설정
+        # 저장된 파일에 numpy 배열(Scaler 정보)이 포함되어 있기 때문입니다.
+        checkpoint = torch.load(file_path, map_location=DEVICE, weights_only=False)
     except Exception as e:
         st.error(f"모델 파일 로드 실패: {file_path}")
-        st.warning("파일이 손상되었거나 Git LFS 포인터일 수 있습니다.")
+        st.warning("파일이 손상되었거나 Git LFS 포인터일 수 있습니다. (weights_only=False 적용됨)")
         raise e
     
     input_dim = checkpoint['input_dim']
@@ -188,11 +190,12 @@ def main():
         ref_path = CNN_MODEL_PATH if cnn_exists else ATTN_MODEL_PATH
         
         try:
-            temp_ckpt = torch.load(ref_path, map_location=DEVICE)
+            # [수정] 메인 로직의 임시 로드 부분도 weights_only=False 적용
+            temp_ckpt = torch.load(ref_path, map_location=DEVICE, weights_only=False)
         except Exception as e:
             st.error(f"모델 파라미터 로드 실패: {ref_path}")
             st.error(f"Error Details: {e}")
-            st.warning("Tip: .pth 파일이 정상적인 바이너리 파일인지 확인하세요. (Git LFS Pointer일 가능성 있음)")
+            st.warning("Tip: .pth 파일이 정상적인 바이너리 파일인지 확인하세요.")
             return
 
         feature_cols = temp_ckpt.get('feature_names', df.columns.tolist())
