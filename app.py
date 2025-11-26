@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import io
 import os
+import matplotlib.font_manager as fm # 한글 폰트 지원 (선택사항)
 
 # --- 설정 ---
 st.set_page_config(page_title="Stock Prediction Inference", layout="wide")
@@ -90,8 +91,7 @@ def load_csv_data(file_path):
 def load_checkpoint(file_path, model_class):
     # 파일 경로에서 직접 로드
     try:
-        # [수정] PyTorch 최신 버전 호환성을 위해 weights_only=False 설정
-        # 저장된 파일에 numpy 배열(Scaler 정보)이 포함되어 있기 때문입니다.
+        # PyTorch 최신 버전 호환성을 위해 weights_only=False 설정
         checkpoint = torch.load(file_path, map_location=DEVICE, weights_only=False)
     except Exception as e:
         st.error(f"모델 파일 로드 실패: {file_path}")
@@ -179,18 +179,18 @@ def main():
     with col_btn:
         run_btn = st.button("🔮 예측 실행", type="primary")
     with col_info:
-        st.write(f"선택된 기준일: **{predict_date}** (데이터 마지막 날짜: {df.index.max().date()})")
+        st.write(f"선택된 시작일: **{predict_date}**")
 
     # 예측 실행 로직
     if run_btn:
         # 입력 데이터 준비
+        # predict_date 하루 전까지의 데이터를 기준으로 삼음 (주말/휴일 고려)
         cutoff_date = pd.to_datetime(predict_date) - pd.Timedelta(days=1)
         
         # 참조 모델 파일 결정 (컬럼 매핑용)
         ref_path = CNN_MODEL_PATH if cnn_exists else ATTN_MODEL_PATH
         
         try:
-            # [수정] 메인 로직의 임시 로드 부분도 weights_only=False 적용
             temp_ckpt = torch.load(ref_path, map_location=DEVICE, weights_only=False)
         except Exception as e:
             st.error(f"모델 파라미터 로드 실패: {ref_path}")
@@ -202,7 +202,8 @@ def main():
         
         # 데이터 슬라이싱
         try:
-            # cutoff_date까지의 데이터 중 마지막 60개
+            # cutoff_date 시점까지 데이터 중 마지막 60개 추출
+            # 만약 cutoff_date가 데이터 마지막 날짜보다 훨씬 뒤라면, 데이터의 가장 마지막 60개가 선택됨
             input_df = df.loc[:cutoff_date, feature_cols].tail(TIME_STEP)
         except KeyError:
             st.error(f"데이터 컬럼 불일치. 모델 학습 시 사용된 컬럼: {feature_cols}")
@@ -211,6 +212,15 @@ def main():
         if len(input_df) < TIME_STEP:
             st.error(f"과거 데이터가 부족합니다. (필요: 60일, 실제: {len(input_df)}일)")
             return
+
+        # [기준 종가 설정]
+        # input_df의 마지막 행이 바로 '예측 직전의 실제 데이터'입니다.
+        # 가장 첫 번째 컬럼(feature_cols[0])이 Target(KOSPI_Close)라고 가정합니다.
+        target_col = feature_cols[0]
+        last_ref_price = input_df.iloc[-1][target_col]
+        last_ref_date = input_df.index[-1].strftime('%Y-%m-%d')
+        
+        st.info(f"💡 기준 데이터: **{last_ref_date}** 종가 **{last_ref_price:,.2f}** (이 값을 기준으로 등락률을 계산합니다)")
 
         # 예측 수행
         results = {}
@@ -226,7 +236,7 @@ def main():
                 with torch.no_grad():
                     pred_change = model(input_tensor).cpu().numpy().flatten()
                 
-                last_val_scaled = input_scaled[-1, 0] # 0번 컬럼 Target 가정
+                last_val_scaled = input_scaled[-1, 0] # 0번 컬럼 Target
                 pred_val_scaled = pred_change + last_val_scaled
                 pred_final = scaler.inverse_transform_col(pred_val_scaled, 0)
                 results["CNN+LSTM"] = pred_final
@@ -257,18 +267,25 @@ def main():
         target_dates = pd.date_range(start=predict_date, periods=HORIZON, freq='B')
         date_strs = target_dates.strftime('%Y-%m-%d')
         
-        res_df = pd.DataFrame({"날짜": date_strs})
+        # [테이블 데이터 생성] - 가격 및 등락률 포함
+        res_data = {"날짜": date_strs}
         for name, val in results.items():
-            res_df[name] = np.round(val, 2)
+            # 가격
+            res_data[f"{name} (Price)"] = np.round(val, 2)
+            # 등락률 (기준가 대비 변동)
+            pct_change = ((val - last_ref_price) / last_ref_price) * 100
+            res_data[f"{name} (Chg%)"] = [f"{x:+.2f}%" for x in pct_change]
+
+        res_df = pd.DataFrame(res_data)
         
-        col1, col2 = st.columns([1, 2])
+        col1, col2 = st.columns([1.5, 2])
         
         with col1:
-            st.markdown("##### 📋 예측 가격 테이블")
+            st.markdown("##### 📋 예측 상세 (가격 & 등락률)")
             st.dataframe(res_df, hide_index=True, use_container_width=True)
             
         with col2:
-            st.markdown("##### 📈 주가 추세 그래프")
+            st.markdown("##### 📈 예측 추세선 (Forecast Only)")
             fig, ax = plt.subplots(figsize=(10, 5))
             
             colors = {"CNN+LSTM": "#ff4b4b", "Attention LSTM": "#1c83e1"}
@@ -276,21 +293,22 @@ def main():
             
             # 예측값 Plot
             for name, val in results.items():
-                ax.plot(res_df['날짜'], val, label=name, 
+                ax.plot(date_strs, val, label=name, 
                         color=colors.get(name, "gray"), 
                         linestyle=styles.get(name, "-"), marker='o', linewidth=2)
             
-            # 과거 데이터 (Context)
-            past_days = 20
-            past_data = df.loc[:cutoff_date, feature_cols[0]].tail(past_days)
-            ax.plot(past_data.index.strftime('%Y-%m-%d'), past_data.values, color='gray', alpha=0.4, label='History')
+            # [수정] 과거 전체 트렌드(History)는 제거하고, 
+            # 기준점(어제 종가)을 점선으로 표시하여 시작점을 명확히 함
+            ax.axhline(y=last_ref_price, color='gray', linestyle=':', label=f"Ref: {last_ref_price:.0f}")
             
             # 그래프 스타일링
-            ax.set_title("KOSPI Forecast Trend")
+            ax.set_title(f"Forecast from {last_ref_date}")
             ax.set_ylabel("Index Price")
             ax.legend()
             ax.grid(True, alpha=0.3)
-            plt.xticks(rotation=45)
+            # x축 날짜 라벨 회전
+            plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+            
             st.pyplot(fig)
 
 if __name__ == "__main__":
