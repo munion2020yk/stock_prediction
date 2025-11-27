@@ -160,7 +160,8 @@ def main():
 
     # 4. 날짜 선택
     st.sidebar.markdown("---")
-    st.sidebar.subheader("예측 시점 설정")
+    #st.sidebar.subheader("예측 시점 설정")
+    st.sidebar.subheader("___")
     
     # Default 12월 1일 설정
     default_date = pd.Timestamp("2025-12-01").date()
