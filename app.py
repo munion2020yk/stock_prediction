@@ -122,10 +122,10 @@ def main():
             font-size: 40px !important;
         }
         div[data-testid="stDataFrame"] th {
-            font-size: 20px !important;
+            font-size: 40px !important;
         }
         div[data-testid="stDataFrame"] td {
-            font-size: 20px !important;
+            font-size: 40px !important;
         }
         </style>
         """, unsafe_allow_html=True)
@@ -208,7 +208,7 @@ def main():
     
     # [수정] Pandas Styler를 사용하여 폰트 크기 직접 적용 (CSS와 이중 적용)
     st.dataframe(
-        res_df.style.set_properties(**{'font-size': '20px'}), 
+        res_df.style.set_properties(**{'font-size': '40px'}), 
         use_container_width=True, 
         hide_index=True
     )
