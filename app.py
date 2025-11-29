@@ -114,37 +114,40 @@ def load_model_checkpoint(model_name):
 
 # --- 메인 앱 ---
 def main():
-    # [스타일] CSS를 사용하여 HTML 테이블 스타일 정의 (글자 크기 24px)
-    st.markdown("""
-        <style>
-        .big-font-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-family: 'Arial', sans-serif;
-        }
-        .big-font-table th {
-            background-color: #f0f2f6;
-            color: #333;
-            font-size: 24px;
-            font-weight: bold;
-            padding: 12px;
-            text-align: center;
-            border-bottom: 2px solid #ddd;
-        }
-        .big-font-table td {
-            font-size: 28px;
-            padding: 12px;
-            text-align: center;
-            border-bottom: 1px solid #ddd;
-            color: #1f1f1f;
-        }
-        .up-trend { color: #d62728; font-weight: bold; } /* 빨강 (상승) */
-        .down-trend { color: #1f77b4; font-weight: bold; } /* 파랑 (하락) */
-        </style>
-    """, unsafe_allow_html=True)
-
     st.title("📈 KOSPI Prediction Service")
     st.markdown("딥러닝 모델을 활용한 **KOSPI 향후 5일 지수 예측** 서비스입니다.")
+
+    # 폰트 크기 상태 관리
+    if 'font_size' not in st.session_state:
+        st.session_state.font_size = 20  # 기본 폰트 크기
+
+    # 폰트 조절 버튼 (사이드바 또는 메인 상단)
+    col_btn1, col_btn2, _ = st.columns([1, 1, 8])
+    with col_btn1:
+        if st.button("➕ 글자 크게"):
+            st.session_state.font_size += 2
+    with col_btn2:
+        if st.button("➖ 글자 작게"):
+            st.session_state.font_size = max(10, st.session_state.font_size - 2)
+
+    # CSS 스타일 동적 적용
+    st.markdown(f"""
+        <style>
+        /* DataFrame 전체 폰트 크기 조절 */
+        div[data-testid="stDataFrame"] div[data-testid="stTable"] {{
+            font-size: {st.session_state.font_size}px !important;
+        }}
+        /* 헤더 폰트 크기 */
+        div[data-testid="stDataFrame"] th {{
+            font-size: {st.session_state.font_size}px !important;
+        }}
+        /* 셀 폰트 크기 */
+        div[data-testid="stDataFrame"] td {{
+            font-size: {st.session_state.font_size}px !important;
+            line-height: 1.5 !important;
+        }}
+        </style>
+    """, unsafe_allow_html=True)
 
     if not os.path.exists(DATA_FILE):
         st.error(f"데이터 파일({DATA_FILE})을 찾을 수 없습니다.")
@@ -203,49 +206,25 @@ def main():
     
     st.subheader(f"📊 {selected_model_name} 예측 결과 ({predict_date} ~)")
     
-    # [수정] DataFrame을 생성하되, HTML 생성을 위한 Raw Data로 사용
+    res_df = pd.DataFrame({
+        "날짜": date_strs,
+        "예측 지수 (Pt)": [f"{p:,.2f}" for p in pred_prices], 
+        "등락": ["-" for _ in range(5)]
+    })
+    
     last_real_price = input_df["KOSPI_Close"].iloc[-1]
-    
-    # HTML 테이블 생성
-    html_rows = ""
+    diffs = []
     prev = last_real_price
-    for date, price in zip(date_strs, pred_prices):
-        diff = price - prev
-        
-        # 등락 색상 및 기호 적용
-        if diff > 0:
-            diff_str = f"<span class='up-trend'>🔺 {abs(diff):.2f}</span>"
-        elif diff < 0:
-            diff_str = f"<span class='down-trend'>🔻 {abs(diff):.2f}</span>"
-        else:
-            diff_str = "-"
-            
-        html_rows += f"""
-        <tr>
-            <td>{date}</td>
-            <td>{price:,.2f}</td>
-            <td>{diff_str}</td>
-        </tr>
-        """
-        prev = price
-
-    html_table = f"""
-    <table class="big-font-table">
-        <thead>
-            <tr>
-                <th>날짜</th>
-                <th>예측 지수 (Pt)</th>
-                <th>등락 (전일대비)</th>
-            </tr>
-        </thead>
-        <tbody>
-            {html_rows}
-        </tbody>
-    </table>
-    """
+    for p in pred_prices:
+        d = p - prev
+        sign = "🔺" if d > 0 else "🔻" if d < 0 else "-"
+        diffs.append(f"{sign} {abs(d):.2f}")
+        prev = p
+    res_df["등락"] = diffs
     
-    # HTML 렌더링
-    st.markdown(html_table, unsafe_allow_html=True)
+    # [수정] st.dataframe을 사용하되, CSS로 폰트 크기 제어
+    # height 파라미터를 넉넉히 주어 글자 잘림 방지
+    st.dataframe(res_df, use_container_width=True, hide_index=True, height=300)
     
     st.markdown("---")
     st.caption("📉 예측 추세 그래프 (참조용)")
