@@ -114,6 +114,22 @@ def load_model_checkpoint(model_name):
 
 # --- 메인 앱 ---
 def main():
+    # [수정] CSS 스타일 주입: DataFrame 폰트 크기 키우기
+    st.markdown("""
+        <style>
+        /* DataFrame 테이블 폰트 크기 조정 */
+        div[data-testid="stDataFrame"] table {
+            font-size: 20px !important;
+        }
+        div[data-testid="stDataFrame"] th {
+            font-size: 20px !important;
+        }
+        div[data-testid="stDataFrame"] td {
+            font-size: 20px !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
     st.title("📈 KOSPI Prediction Service")
     st.markdown("딥러닝 모델을 활용한 **KOSPI 향후 5일 지수 예측** 서비스입니다.")
 
@@ -123,7 +139,7 @@ def main():
         
     df = load_csv_data(DATA_FILE)
 
-    # --- 사이드바 ---
+    # --- 사이드바 설정 ---
     st.sidebar.header("설정 (Configuration)")
     
     model_options = ["LSTM", "CNN", "CNN+LSTM", "LSTM(Attention)"]
@@ -154,8 +170,8 @@ def main():
         st.error("과거 데이터 부족.")
         st.stop()
         
-    # [수정] Scaling (X) - 저장된 min, range 사용
-    scaler_x = checkpoint['scaler_x'] # {'min': array, 'range': array}
+    # Scaling (X) - 저장된 min, range 사용
+    scaler_x = checkpoint['scaler_x'] 
     input_raw = input_df.values
     input_scaled = (input_raw - scaler_x['min']) / scaler_x['range']
     
@@ -164,21 +180,19 @@ def main():
     with torch.no_grad():
         pred_scaled = model(input_tensor).cpu().numpy().flatten()
         
-    # [수정] Inverse Scaling (y) - 저장된 min, range 사용
-    scaler_y = checkpoint['scaler_y'] # {'min': val, 'range': val}
-    # 공식: raw = scaled * range + min
+    # Inverse Scaling (y) - 저장된 min, range 사용
+    scaler_y = checkpoint['scaler_y']
     pred_prices = (pred_scaled * scaler_y['range']) + scaler_y['min']
 
     # --- 화면 구성 ---
     target_dates = pd.date_range(start=predict_date, periods=5, freq='B')
     date_strs = target_dates.strftime('%Y-%m-%d')
     
-    # [수정] 라벨 변경 (주가 -> 지수 Point)
     st.subheader(f"📊 {selected_model_name} 예측 결과 ({predict_date} ~)")
     
     res_df = pd.DataFrame({
         "날짜": date_strs,
-        "예측 지수 (Pt)": [f"{p:,.2f}" for p in pred_prices], # 소수점 2자리까지
+        "예측 지수 (Pt)": [f"{p:,.2f}" for p in pred_prices], 
         "등락": ["-" for _ in range(5)]
     })
     
@@ -192,7 +206,12 @@ def main():
         prev = p
     res_df["등락"] = diffs
     
-    st.dataframe(res_df, use_container_width=True, hide_index=True)
+    # [수정] Pandas Styler를 사용하여 폰트 크기 직접 적용 (CSS와 이중 적용)
+    st.dataframe(
+        res_df.style.set_properties(**{'font-size': '20px'}), 
+        use_container_width=True, 
+        hide_index=True
+    )
     
     st.markdown("---")
     st.caption("📉 예측 추세 그래프 (참조용)")
