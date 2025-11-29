@@ -119,7 +119,7 @@ def main():
         <style>
         /* DataFrame 테이블 폰트 크기 조정 */
         div[data-testid="stDataFrame"] table {
-            font-size: 20px !important;
+            font-size: 40px !important;
         }
         div[data-testid="stDataFrame"] th {
             font-size: 20px !important;
