@@ -3,314 +3,248 @@ import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import matplotlib.pyplot as plt
-import io
 import os
-import matplotlib.font_manager as fm # 한글 폰트 지원 (선택사항)
 
 # --- 설정 ---
-st.set_page_config(page_title="Stock Prediction Inference", layout="wide")
+st.set_page_config(page_title="KOSPI Prediction App", layout="wide")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-TIME_STEP = 60
-HORIZON = 5
 
-# 기본 파일 경로 설정 (같은 폴더에 있다고 가정)
-DATA_FILE_PATH = "KOSPI_base.csv"
-CNN_MODEL_PATH = "cnn_lstm_model.pth"
-ATTN_MODEL_PATH = "attn_lstm_model.pth"
+# 파일 경로 (같은 폴더 기준)
+DATA_FILE = "KOSPI_dataset_final.csv"
+MODEL_FILES = {
+    "LSTM": "LSTM_params.pth",
+    "CNN": "CNN_params.pth",
+    "CNN+LSTM": "CNN+LSTM_params.pth",
+    "LSTM(Attention)": "LSTM_Attn_params.pth"
+}
 
-# --- 모델 클래스 정의 (학습 코드와 동일해야 함) ---
-class CNN_LSTM(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super(CNN_LSTM, self).__init__()
-        self.conv = nn.Conv1d(input_dim, 64, 3, padding=1)
-        self.pool = nn.MaxPool1d(2)
-        self.lstm = nn.LSTM(64, hidden_dim, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+# --- 모델 클래스 정의 (학습 코드와 동일) ---
+class LSTMModel(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, output_size):
+        super(LSTMModel, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        return self.fc(out[:, -1, :])
+
+class CNNModel(nn.Module):
+    def __init__(self, input_size, output_size, num_filters, kernel_size, seq_length):
+        super(CNNModel, self).__init__()
+        self.conv1 = nn.Conv1d(input_size, num_filters, kernel_size, padding='same')
         self.relu = nn.ReLU()
-
+        self.pool = nn.MaxPool1d(2)
+        pooled_len = seq_length // 2
+        self.fc = nn.Linear(num_filters * pooled_len, output_size)
     def forward(self, x):
         x = x.permute(0, 2, 1)
-        x = self.pool(self.relu(self.conv(x)))
-        x = x.permute(0, 2, 1)
-        _, (h_n, _) = self.lstm(x)
-        return self.fc(h_n[-1])
+        x = self.pool(self.relu(self.conv1(x)))
+        return self.fc(x.flatten(1))
 
-class AttentionLSTM(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super(AttentionLSTM, self).__init__()
-        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True, bidirectional=True)
-        self.attention = nn.Linear(hidden_dim * 2, 1)
-        self.fc = nn.Linear(hidden_dim * 2, output_dim)
-
+class CNNLSTMModel(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, output_size, num_filters, kernel_size):
+        super(CNNLSTMModel, self).__init__()
+        self.conv1 = nn.Conv1d(input_size, num_filters, kernel_size, padding='same')
+        self.relu = nn.ReLU()
+        self.lstm = nn.LSTM(num_filters, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
     def forward(self, x):
-        outputs, _ = self.lstm(x)
-        score = self.attention(outputs)
-        weights = F.softmax(score, dim=1)
-        context = torch.sum(outputs * weights, dim=1)
-        return self.fc(context)
+        x = x.permute(0, 2, 1)
+        x = self.relu(self.conv1(x))
+        x = x.permute(0, 2, 1)
+        out, _ = self.lstm(x)
+        return self.fc(out[:, -1, :])
+
+class LSTMAttentionModel(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, output_size):
+        super(LSTMAttentionModel, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.attention = nn.Linear(hidden_size, 1)
+        self.fc = nn.Linear(hidden_size, output_size)
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        attn_weights = torch.softmax(self.attention(out), dim=1) 
+        context = torch.sum(attn_weights * out, dim=1) 
+        out = self.fc(context)
+        return out
 
 # --- 유틸리티 함수 ---
-class CustomMinMaxScaler:
-    def __init__(self):
-        self.min_ = None
-        self.max_ = None
-        self.scale_ = None
-    
-    def load_params(self, min_val, scale_val):
-        self.min_ = min_val
-        self.scale_ = scale_val
-
-    def transform(self, data):
-        return (data - self.min_) / self.scale_
-    
-    def inverse_transform_col(self, data, col_index):
-        return (data * self.scale_[col_index]) + self.min_[col_index]
-
 @st.cache_data
-def load_csv_data(file_path):
-    encodings = ['utf-8', 'utf-8-sig', 'utf-16', 'cp949']
-    df = pd.DataFrame()
-    
-    if not os.path.exists(file_path):
-        return df
-
+def load_csv_data(filepath):
+    if not os.path.exists(filepath): return pd.DataFrame()
+    encodings = ['utf-16', 'utf-8', 'utf-8-sig', 'cp949', 'latin1']
+    df = None
     for enc in encodings:
         try:
-            df = pd.read_csv(file_path, sep='\t', index_col='Date', parse_dates=['Date'], encoding=enc)
-            if len(df.columns) <= 1:
-                df = pd.read_csv(file_path, sep=',', index_col='Date', parse_dates=['Date'], encoding=enc)
-            break
+            temp_df = pd.read_csv(filepath, sep='\t', index_col="Date", parse_dates=True, encoding=enc)
+            if len(temp_df.columns) > 1: df = temp_df; break
+            temp_df = pd.read_csv(filepath, sep=',', index_col="Date", parse_dates=True, encoding=enc)
+            if len(temp_df.columns) > 1: df = temp_df; break
         except: continue
     
-    if not df.empty:
-        df = df[df.index.notna()].sort_index().ffill().dropna()
+    if df is not None:
+        for col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
+        df = df.ffill().bfill().dropna()
+        df.columns = [c.strip() for c in df.columns]
     return df
 
-def load_checkpoint(file_path, model_class):
-    # 파일 경로에서 직접 로드
-    try:
-        # PyTorch 최신 버전 호환성을 위해 weights_only=False 설정
-        checkpoint = torch.load(file_path, map_location=DEVICE, weights_only=False)
-    except Exception as e:
-        st.error(f"모델 파일 로드 실패: {file_path}")
-        st.warning("파일이 손상되었거나 Git LFS 포인터일 수 있습니다. (weights_only=False 적용됨)")
-        raise e
+def load_model_checkpoint(model_name):
+    pth_file = MODEL_FILES.get(model_name)
+    if not os.path.exists(pth_file): return None
+    
+    # weights_only=False 필수 (numpy, dict 포함)
+    checkpoint = torch.load(pth_file, map_location=DEVICE, weights_only=False)
     
     input_dim = checkpoint['input_dim']
-    scaler = CustomMinMaxScaler()
-    scaler.load_params(checkpoint['scaler_min'], checkpoint['scaler_scale'])
+    seq_len = 5 # Configured in training
+    horizon = 5 # Configured in training
     
-    model = model_class(input_dim, 64, HORIZON)
+    # Init Model
+    if model_name == "CNN":
+        model = CNNModel(input_dim, horizon, 32, 5, seq_len)
+    elif model_name == "CNN+LSTM":
+        model = CNNLSTMModel(input_dim, 256, 1, horizon, 32, 5)
+    elif model_name == "LSTM(Attention)":
+        model = LSTMAttentionModel(input_dim, 256, 1, horizon)
+    else: # LSTM
+        model = LSTMModel(input_dim, 256, 1, horizon)
+        
     model.load_state_dict(checkpoint['model_state_dict'])
     model.to(DEVICE)
     model.eval()
     
-    return model, scaler, input_dim, checkpoint.get('feature_names', [])
+    return model, checkpoint
 
 # --- 메인 앱 ---
 def main():
-    st.title("⚡ 주가 예측 자동 분석 (Inference Mode)")
-    st.markdown("서버에 저장된 데이터와 학습된 모델을 **자동으로 로드**하여 분석합니다.")
-
-    # 사이드바 상태 표시
-    st.sidebar.header("시스템 상태 (자동 로드)")
+    st.title("📈 KOSPI Stock Prediction Service")
+    st.markdown("딥러닝 모델을 활용한 **KOSPI 향후 5일 주가 예측** 서비스입니다.")
 
     # 1. 데이터 로드 확인
-    if os.path.exists(DATA_FILE_PATH):
-        df = load_csv_data(DATA_FILE_PATH)
-        if not df.empty:
-            st.sidebar.success(f"✅ 데이터 로드됨 ({len(df)}일)")
-        else:
-            st.sidebar.error("❌ 데이터 파일 읽기 실패")
-            st.stop()
-    else:
-        st.sidebar.error(f"❌ 데이터 파일 없음: {DATA_FILE_PATH}")
-        st.info(f"실행 경로에 '{DATA_FILE_PATH}' 파일이 있는지 확인해주세요.")
+    df = load_csv_data(DATA_FILE)
+    if df.empty:
+        st.error(f"데이터 파일({DATA_FILE})을 찾을 수 없습니다.")
         st.stop()
 
-    # 2. 모델 파일 확인
-    cnn_exists = os.path.exists(CNN_MODEL_PATH)
-    attn_exists = os.path.exists(ATTN_MODEL_PATH)
+    # --- 사이드바 설정 ---
+    st.sidebar.header("설정 (Configuration)")
     
-    if cnn_exists:
-        st.sidebar.success(f"✅ CNN+LSTM 모델 발견")
-    else:
-        st.sidebar.warning(f"⚠️ CNN+LSTM 모델 없음 ({CNN_MODEL_PATH})")
-
-    if attn_exists:
-        st.sidebar.success(f"✅ Attention LSTM 모델 발견")
-    else:
-        st.sidebar.warning(f"⚠️ Attention LSTM 모델 없음 ({ATTN_MODEL_PATH})")
-
-    if not (cnn_exists or attn_exists):
-        st.error("사용 가능한 모델 파일(.pth)이 없습니다. 'train_and_save.py'를 먼저 실행해주세요.")
+    # 2. 모델 선택 (Radio Box)
+    model_options = ["LSTM", "CNN", "CNN+LSTM", "LSTM(Attention)"]
+    selected_model_name = st.sidebar.radio("예측 모델 선택", model_options, index=0) # 초기값 LSTM
+    
+    # 모델 로드
+    loaded_data = load_model_checkpoint(selected_model_name)
+    if loaded_data is None:
+        st.sidebar.error(f"모델 파일({MODEL_FILES.get(selected_model_name)})이 없습니다.")
         st.stop()
-
-    # 3. 모델 선택
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("예측 모델 설정")
-    use_cnn = st.sidebar.checkbox("메인: CNN+LSTM", value=cnn_exists, disabled=not cnn_exists)
-    use_attn = st.sidebar.checkbox("보조: Attention LSTM", value=attn_exists, disabled=not attn_exists)
-
-    if not (use_cnn or use_attn):
-        st.warning("최소 하나의 모델을 선택해주세요.")
-        return
-
-    # 4. 날짜 선택
-    st.sidebar.markdown("---")
-    #st.sidebar.subheader("예측 시점 설정")
-    st.sidebar.subheader("___")
+        
+    model, checkpoint = loaded_data
+    feature_names = checkpoint['feature_names']
     
-    # Default 12월 1일 설정
+    # 3. 날짜 선택
+    last_date = df.index[-1]
     default_date = pd.Timestamp("2025-12-01").date()
-    min_date = df.index.min().date() + pd.Timedelta(days=60)
-    max_date = df.index.max().date() + pd.Timedelta(days=1)
+    min_date = df.index.min().date() + pd.Timedelta(days=10)
     
-    if default_date > max_date: default_date = max_date
-    if default_date < min_date: default_date = min_date
+    predict_date = st.sidebar.date_input("예측 시작 날짜", value=default_date, min_value=min_date)
+    
+    # --- 예측 실행 및 결과 표시 ---
+    
+    # 데이터 준비 (cutoff date 기준 과거 5일)
+    cutoff_date = pd.to_datetime(predict_date) - pd.Timedelta(days=1)
+    
+    # 학습 때 사용한 Feature만 선택
+    try:
+        input_df = df.loc[:cutoff_date, feature_names].tail(5)
+    except KeyError:
+        st.error("데이터 컬럼이 모델 학습 시와 다릅니다.")
+        st.stop()
+        
+    if len(input_df) < 5:
+        st.error("과거 데이터가 부족하여 예측할 수 없습니다.")
+        st.stop()
+        
+    # Scaling (X) - 저장된 scaler 파라미터 사용
+    x_min = checkpoint['scaler_x_min']
+    x_scale = checkpoint['scaler_x_scale']
+    
+    input_raw = input_df.values
+    input_scaled = (input_raw - x_min) / x_scale
+    
+    # Predict
+    input_tensor = torch.FloatTensor(input_scaled).unsqueeze(0).to(DEVICE)
+    with torch.no_grad():
+        pred_scaled = model(input_tensor).cpu().numpy().flatten()
+        
+    # Inverse Scaling (y)
+    y_params = checkpoint['scaler_y_params']
+    y_min = y_params['min'][0]
+    y_scale = y_params['scale'][0]
+    
+    pred_prices = (pred_scaled * y_scale) + y_params['data_min'][0] # min_ + data_min 주의 (sklearn 구조에 따름)
+    # sklearn minmax: X_std = (X - X.min) / (X.max - X.min)
+    # X_scaled = X_std * (max - min) + min
+    # Inverse: X = X_scaled * scale_ + min_ 
+    # checkpoint 저장시 scaler.min_ 과 scale_ 저장했음.
+    # 정확한 역변환: (val - min_) / scale_  (X) -> val * scale + min? (X)
+    # sklearn 공식: X = (X_scaled - min_) / scale_  (X)
+    # -> X_scaled = X * scale_ + min_
+    # -> X = (X_scaled - min_) / scale_
+    pred_prices = (pred_scaled - y_params['min'][0]) / y_params['scale'][0]
 
-    predict_date = st.date_input("예측 시작 날짜 (이 날짜부터 5일)", value=default_date, min_value=min_date)
-
-    # 메인 화면 구성
+    # --- 화면 구성 ---
+    
+    # 날짜 생성
+    target_dates = pd.date_range(start=predict_date, periods=5, freq='B')
+    date_strs = target_dates.strftime('%Y-%m-%d')
+    
+    # 1. 숫자 테이블 (크게)
+    st.subheader(f"📊 {selected_model_name} 예측 결과 ({predict_date} ~)")
+    
+    res_df = pd.DataFrame({
+        "날짜": date_strs,
+        "예측 주가 (KRW)": [f"{p:,.0f}" for p in pred_prices],
+        "등락": ["-" for _ in range(5)] # 전일대비 계산 가능하면 추가
+    })
+    
+    # 전일 대비 계산
+    last_real_price = input_df["KOSPI_Close"].iloc[-1]
+    diffs = []
+    prev = last_real_price
+    for p in pred_prices:
+        d = p - prev
+        sign = "🔺" if d > 0 else "🔻" if d < 0 else "-"
+        diffs.append(f"{sign} {abs(d):.0f}")
+        prev = p
+    res_df["등락"] = diffs
+    
+    # 테이블 스타일링 (글자 크기 키우기)
+    st.dataframe(res_df, use_container_width=True, hide_index=True)
+    
+    # 2. 참조용 그래프 (작게)
     st.markdown("---")
+    st.caption("📉 예측 추세 그래프 (참조용)")
     
-    col_btn, col_info = st.columns([1, 3])
-    with col_btn:
-        run_btn = st.button("🔮 예측 실행", type="primary")
-    with col_info:
-        st.write(f"선택된 시작일: **{predict_date}**")
-
-    # 예측 실행 로직
-    if run_btn:
-        # 입력 데이터 준비
-        # predict_date 하루 전까지의 데이터를 기준으로 삼음 (주말/휴일 고려)
-        cutoff_date = pd.to_datetime(predict_date) - pd.Timedelta(days=1)
+    col1, col2, col3 = st.columns([1, 2, 1]) # 가운데 정렬 효과
+    with col2:
+        fig, ax = plt.subplots(figsize=(6, 3)) # 작은 사이즈
         
-        # 참조 모델 파일 결정 (컬럼 매핑용)
-        ref_path = CNN_MODEL_PATH if cnn_exists else ATTN_MODEL_PATH
+        # 시작점 (과거 1일) 연결
+        plot_dates = [input_df.index[-1]] + list(target_dates)
+        plot_values = [last_real_price] + list(pred_prices)
         
-        try:
-            temp_ckpt = torch.load(ref_path, map_location=DEVICE, weights_only=False)
-        except Exception as e:
-            st.error(f"모델 파라미터 로드 실패: {ref_path}")
-            st.error(f"Error Details: {e}")
-            st.warning("Tip: .pth 파일이 정상적인 바이너리 파일인지 확인하세요.")
-            return
-
-        feature_cols = temp_ckpt.get('feature_names', df.columns.tolist())
+        ax.plot(plot_dates, plot_values, marker='o', color='red', linestyle='--', linewidth=1.5, label='Prediction')
+        ax.axhline(y=last_real_price, color='gray', linestyle=':', linewidth=1, label='Ref Price')
         
-        # 데이터 슬라이싱
-        try:
-            # cutoff_date 시점까지 데이터 중 마지막 60개 추출
-            # 만약 cutoff_date가 데이터 마지막 날짜보다 훨씬 뒤라면, 데이터의 가장 마지막 60개가 선택됨
-            input_df = df.loc[:cutoff_date, feature_cols].tail(TIME_STEP)
-        except KeyError:
-            st.error(f"데이터 컬럼 불일치. 모델 학습 시 사용된 컬럼: {feature_cols}")
-            return
-
-        if len(input_df) < TIME_STEP:
-            st.error(f"과거 데이터가 부족합니다. (필요: 60일, 실제: {len(input_df)}일)")
-            return
-
-        # [기준 종가 설정]
-        # input_df의 마지막 행이 바로 '예측 직전의 실제 데이터'입니다.
-        # 가장 첫 번째 컬럼(feature_cols[0])이 Target(KOSPI_Close)라고 가정합니다.
-        target_col = feature_cols[0]
-        last_ref_price = input_df.iloc[-1][target_col]
-        last_ref_date = input_df.index[-1].strftime('%Y-%m-%d')
+        ax.set_title("5-Day Forecast Trend", fontsize=10)
+        ax.tick_params(axis='x', labelsize=8, rotation=45)
+        ax.tick_params(axis='y', labelsize=8)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
         
-        st.info(f"💡 기준 데이터: **{last_ref_date}** 종가 **{last_ref_price:,.2f}** (이 값을 기준으로 등락률을 계산합니다)")
-
-        # 예측 수행
-        results = {}
-        
-        # 1. CNN+LSTM
-        if use_cnn and cnn_exists:
-            try:
-                model, scaler, _, _ = load_checkpoint(CNN_MODEL_PATH, CNN_LSTM)
-                input_raw = input_df.values
-                input_scaled = scaler.transform(input_raw)
-                input_tensor = torch.tensor(input_scaled, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-                
-                with torch.no_grad():
-                    pred_change = model(input_tensor).cpu().numpy().flatten()
-                
-                last_val_scaled = input_scaled[-1, 0] # 0번 컬럼 Target
-                pred_val_scaled = pred_change + last_val_scaled
-                pred_final = scaler.inverse_transform_col(pred_val_scaled, 0)
-                results["CNN+LSTM"] = pred_final
-            except Exception as e:
-                st.error(f"CNN+LSTM 예측 중 오류 발생: {e}")
-
-        # 2. Attention LSTM
-        if use_attn and attn_exists:
-            try:
-                model, scaler, _, _ = load_checkpoint(ATTN_MODEL_PATH, AttentionLSTM)
-                input_raw = input_df.values
-                input_scaled = scaler.transform(input_raw)
-                input_tensor = torch.tensor(input_scaled, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-                
-                with torch.no_grad():
-                    pred_change = model(input_tensor).cpu().numpy().flatten()
-                
-                last_val_scaled = input_scaled[-1, 0]
-                pred_val_scaled = pred_change + last_val_scaled
-                pred_final = scaler.inverse_transform_col(pred_val_scaled, 0)
-                results["Attention LSTM"] = pred_final
-            except Exception as e:
-                st.error(f"Attention LSTM 예측 중 오류 발생: {e}")
-
-        # 결과 시각화
-        st.subheader(f"📊 예측 결과 분석 ({predict_date} ~ +5일)")
-        
-        target_dates = pd.date_range(start=predict_date, periods=HORIZON, freq='B')
-        date_strs = target_dates.strftime('%Y-%m-%d')
-        
-        # [테이블 데이터 생성] - 가격 및 등락률 포함
-        res_data = {"날짜": date_strs}
-        for name, val in results.items():
-            # 가격
-            res_data[f"{name} (Price)"] = np.round(val, 2)
-            # 등락률 (기준가 대비 변동)
-            pct_change = ((val - last_ref_price) / last_ref_price) * 100
-            res_data[f"{name} (Chg%)"] = [f"{x:+.2f}%" for x in pct_change]
-
-        res_df = pd.DataFrame(res_data)
-        
-        col1, col2 = st.columns([1.5, 2])
-        
-        with col1:
-            st.markdown("##### 📋 예측 상세 (가격 & 등락률)")
-            st.dataframe(res_df, hide_index=True, use_container_width=True)
-            
-        with col2:
-            st.markdown("##### 📈 예측 추세선 (Forecast Only)")
-            fig, ax = plt.subplots(figsize=(10, 5))
-            
-            colors = {"CNN+LSTM": "#ff4b4b", "Attention LSTM": "#1c83e1"}
-            styles = {"CNN+LSTM": "-", "Attention LSTM": "--"}
-            
-            # 예측값 Plot
-            for name, val in results.items():
-                ax.plot(date_strs, val, label=name, 
-                        color=colors.get(name, "gray"), 
-                        linestyle=styles.get(name, "-"), marker='o', linewidth=2)
-            
-            # [수정] 과거 전체 트렌드(History)는 제거하고, 
-            # 기준점(어제 종가)을 점선으로 표시하여 시작점을 명확히 함
-            ax.axhline(y=last_ref_price, color='gray', linestyle=':', label=f"Ref: {last_ref_price:.0f}")
-            
-            # 그래프 스타일링
-            ax.set_title(f"Forecast from {last_ref_date}")
-            ax.set_ylabel("Index Price")
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            # x축 날짜 라벨 회전
-            plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
-            
-            st.pyplot(fig)
+        st.pyplot(fig)
 
 if __name__ == "__main__":
     main()
