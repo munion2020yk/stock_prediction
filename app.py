@@ -114,21 +114,34 @@ def load_model_checkpoint(model_name):
 
 # --- 메인 앱 ---
 def main():
-    # [수정] CSS 스타일 주입: DataFrame 폰트 크기 키우기
+    # [스타일] CSS를 사용하여 HTML 테이블 스타일 정의 (글자 크기 24px)
     st.markdown("""
         <style>
-        /* DataFrame 테이블 폰트 크기 조정 */
-        div[data-testid="stDataFrame"] table {
-            font-size: 40px !important;
+        .big-font-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: 'Arial', sans-serif;
         }
-        div[data-testid="stDataFrame"] th {
-            font-size: 40px !important;
+        .big-font-table th {
+            background-color: #f0f2f6;
+            color: #333;
+            font-size: 24px;
+            font-weight: bold;
+            padding: 12px;
+            text-align: center;
+            border-bottom: 2px solid #ddd;
         }
-        div[data-testid="stDataFrame"] td {
-            font-size: 40px !important;
+        .big-font-table td {
+            font-size: 28px;
+            padding: 12px;
+            text-align: center;
+            border-bottom: 1px solid #ddd;
+            color: #1f1f1f;
         }
+        .up-trend { color: #d62728; font-weight: bold; } /* 빨강 (상승) */
+        .down-trend { color: #1f77b4; font-weight: bold; } /* 파랑 (하락) */
         </style>
-        """, unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
     st.title("📈 KOSPI Prediction Service")
     st.markdown("딥러닝 모델을 활용한 **KOSPI 향후 5일 지수 예측** 서비스입니다.")
@@ -170,7 +183,7 @@ def main():
         st.error("과거 데이터 부족.")
         st.stop()
         
-    # Scaling (X) - 저장된 min, range 사용
+    # Scaling (X)
     scaler_x = checkpoint['scaler_x'] 
     input_raw = input_df.values
     input_scaled = (input_raw - scaler_x['min']) / scaler_x['range']
@@ -180,7 +193,7 @@ def main():
     with torch.no_grad():
         pred_scaled = model(input_tensor).cpu().numpy().flatten()
         
-    # Inverse Scaling (y) - 저장된 min, range 사용
+    # Inverse Scaling (y)
     scaler_y = checkpoint['scaler_y']
     pred_prices = (pred_scaled * scaler_y['range']) + scaler_y['min']
 
@@ -190,28 +203,49 @@ def main():
     
     st.subheader(f"📊 {selected_model_name} 예측 결과 ({predict_date} ~)")
     
-    res_df = pd.DataFrame({
-        "날짜": date_strs,
-        "예측 지수 (Pt)": [f"{p:,.2f}" for p in pred_prices], 
-        "등락": ["-" for _ in range(5)]
-    })
-    
+    # [수정] DataFrame을 생성하되, HTML 생성을 위한 Raw Data로 사용
     last_real_price = input_df["KOSPI_Close"].iloc[-1]
-    diffs = []
-    prev = last_real_price
-    for p in pred_prices:
-        d = p - prev
-        sign = "🔺" if d > 0 else "🔻" if d < 0 else "-"
-        diffs.append(f"{sign} {abs(d):.2f}")
-        prev = p
-    res_df["등락"] = diffs
     
-    # [수정] Pandas Styler를 사용하여 폰트 크기 직접 적용 (CSS와 이중 적용)
-    st.dataframe(
-        res_df.style.set_properties(**{'font-size': '40px'}), 
-        use_container_width=True, 
-        hide_index=True
-    )
+    # HTML 테이블 생성
+    html_rows = ""
+    prev = last_real_price
+    for date, price in zip(date_strs, pred_prices):
+        diff = price - prev
+        
+        # 등락 색상 및 기호 적용
+        if diff > 0:
+            diff_str = f"<span class='up-trend'>🔺 {abs(diff):.2f}</span>"
+        elif diff < 0:
+            diff_str = f"<span class='down-trend'>🔻 {abs(diff):.2f}</span>"
+        else:
+            diff_str = "-"
+            
+        html_rows += f"""
+        <tr>
+            <td>{date}</td>
+            <td>{price:,.2f}</td>
+            <td>{diff_str}</td>
+        </tr>
+        """
+        prev = price
+
+    html_table = f"""
+    <table class="big-font-table">
+        <thead>
+            <tr>
+                <th>날짜</th>
+                <th>예측 지수 (Pt)</th>
+                <th>등락 (전일대비)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {html_rows}
+        </tbody>
+    </table>
+    """
+    
+    # HTML 렌더링
+    st.markdown(html_table, unsafe_allow_html=True)
     
     st.markdown("---")
     st.caption("📉 예측 추세 그래프 (참조용)")
