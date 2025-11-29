@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates # 날짜 포맷팅을 위해 추가
 import os
 
 # --- 설정 ---
@@ -240,6 +241,11 @@ def main():
 
         ax.set_title("5-Day Forecast Trend", fontsize=10)
         ax.set_ylabel("KOSPI Index")
+        
+        # [수정] x축 날짜 포맷팅 (YYYY-MM-DD)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        ax.xaxis.set_major_locator(mdates.DayLocator()) # 매일 표시
+        
         ax.tick_params(axis='x', labelsize=8, rotation=45)
         ax.tick_params(axis='y', labelsize=8)
         ax.grid(True, alpha=0.3)
