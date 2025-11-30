@@ -5,10 +5,12 @@ from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
 import numpy as np
 import os
+import random
 
 # --- 설정 (Configuration) ---
 CONFIG = {
     "data_file": "KOSPI_dataset_final.csv",
+    # 11월 28일까지 학습 (미래 예측용)
     "data_start": "2013-08-06",
     "data_end": "2025-11-28",
     
@@ -24,7 +26,10 @@ CONFIG = {
     
     "batch_size": 256,
     "epochs": 100,            
-    "learning_rate": 0.001,
+    "learning_rate": 0.005, 
+    "patience": 5,
+    
+    "seed": 100, # [추가] 랜덤 시드 설정
     
     "device": torch.device("cuda" if torch.cuda.is_available() else "cpu")
 }
@@ -32,12 +37,38 @@ CONFIG = {
 # --- Feature Groups ---
 FEATURE_GROUPS = {
     "KOSPI": ['KOSPI_Close', 'KOSPI_Open', 'KOSPI_High', 'KOSPI_Low', 'KOSPI_Volume', 'KOSPI_Amount', 'KOSPI_Change', 'KOSPI_Fluctuation', 'KOSPI_UpDown'],
+    "NASDAQ": ['NAS_Open', 'NAS_High', 'NAS_Low', 'NAS_Close', 'NAS_Volume', 'NAS_Change'],
+    "VKOSPI": ['VKOSPI_Close', 'VKOSPI_Change'],
+    "Rate_FX": ['USD_KRW', 'EUR_KRW', 'Rate'],
     "Foreign": ['Foreign_MarketCap_Ratio', 'Foreign_MarketCap', 'Foreign_Rate'],
+    "Future": ['Future_Close', 'Future_Change'],
+    "Oil": ['WTI_Close', 'WTI_Change']
 }
+
+# LSTM+ 모델용 피처 리스트 (Whitelist)
+LSTM_PLUS_FEATURES = [
+    'KOSPI_Open', 'KOSPI_High', 'KOSPI_Low', 'KOSPI_Close', 'KOSPI_Volume', 
+    'Future_Close', 'Future_Change', 
+    'USD_KRW', 
+    'WTI_Change'
+]
 
 print(f"Using Device: {CONFIG['device']}")
 
-# --- [수정] 명확한 수동 Scaler 클래스 ---
+# --- [추가] 랜덤 시드 고정 함수 ---
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed) # 멀티 GPU 사용 시
+        # CuDNN 결정론적 모드 설정 (속도는 느려질 수 있음)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    print(f"Random Seed set to: {seed}")
+
+# --- [수동 Scaler] ---
 class ManualScaler:
     def __init__(self):
         self.min_ = None
@@ -45,23 +76,16 @@ class ManualScaler:
         self.range_ = None
         
     def fit_transform(self, data):
-        # data: numpy array (N, Features)
         self.min_ = np.min(data, axis=0)
         self.max_ = np.max(data, axis=0)
         self.range_ = self.max_ - self.min_
-        
-        # 0으로 나누기 방지
-        self.range_[self.range_ == 0] = 1.0
-        
+        self.range_[self.range_ == 0] = 1.0 # 0 나누기 방지
         return (data - self.min_) / self.range_
         
     def get_params(self):
-        return {
-            'min': self.min_,
-            'range': self.range_
-        }
+        return {'min': self.min_, 'range': self.range_}
 
-# --- 데이터 로드 함수 ---
+# --- 데이터 로드 및 전처리 ---
 def load_data(config):
     if not os.path.exists(config["data_file"]):
         raise FileNotFoundError(f"File not found: {config['data_file']}")
@@ -82,27 +106,27 @@ def load_data(config):
     df = df.loc[config["data_start"]:config["data_end"]]
     df = df.ffill().bfill().dropna()
     df.columns = [c.strip() for c in df.columns]
-    
     return df
 
-def process_features(df, drop_group_name=None):
+def process_features(df, feature_config):
     target_col = "KOSPI_Close"
     available_cols = df.columns.tolist()
     
-    cols_to_drop = []
-    if drop_group_name and drop_group_name in FEATURE_GROUPS:
-        cols_to_drop = FEATURE_GROUPS[drop_group_name]
-        cols_to_drop = [c for c in cols_to_drop if c in available_cols]
-        if target_col in cols_to_drop:
-             cols_to_drop.remove(target_col)
-    
-    # Target (y)
+    # 1. Target (y)
     raw_y = df[[target_col]].values
     
-    # Input (X)
-    input_df = df.drop(columns=cols_to_drop, errors='ignore')
+    # 2. Input (X) 구성
+    if isinstance(feature_config, list): # Whitelist (LSTM+)
+        selected_cols = [c for c in feature_config if c in available_cols]
+        input_df = df[selected_cols]
+    else: # Blacklist (Drop Group)
+        cols_to_drop = []
+        if feature_config and feature_config in FEATURE_GROUPS:
+            cols_to_drop = FEATURE_GROUPS[feature_config]
+            cols_to_drop = [c for c in cols_to_drop if c in available_cols]
+            if target_col in cols_to_drop: cols_to_drop.remove(target_col)
+        input_df = df.drop(columns=cols_to_drop, errors='ignore')
     
-    # [수정] ManualScaler 사용
     scaler_x = ManualScaler()
     scaler_y = ManualScaler()
     
@@ -179,6 +203,7 @@ def train_model(model, X_train, y_train, config):
     y_t = torch.FloatTensor(y_train).to(config['device'])
     
     dataset = TensorDataset(X_t, y_t)
+    # 시드 고정 효과를 위해 shuffle=True여도 순서가 동일하게 유지됨
     loader = DataLoader(dataset, batch_size=config["batch_size"], shuffle=True)
     
     optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"])
@@ -186,58 +211,61 @@ def train_model(model, X_train, y_train, config):
     model.train()
     
     for epoch in range(config["epochs"]):
-        epoch_loss = 0
         for X_b, y_b in loader:
             optimizer.zero_grad()
             pred = model(X_b)
             loss = criterion(pred, y_b)
             loss.backward()
             optimizer.step()
-            epoch_loss += loss.item()
-            
-        if (epoch+1) % 20 == 0:
-            print(f"  Epoch {epoch+1}/{config['epochs']}, Loss: {epoch_loss/len(loader):.6f}")
             
     return model
 
 def main():
+    # [추가] 시드 고정 실행 (전체 프로세스 초기화)
+    set_seed(CONFIG["seed"])
+    
     print("Loading Data...")
     full_df = load_data(CONFIG)
     
+    # 5가지 시나리오
     scenarios = [
-        ("CNN", "Foreign", CNNModel),
-        ("LSTM", None, LSTMModel),
-        ("CNN+LSTM", "KOSPI", CNNLSTMModel),
-        ("LSTM(Attention)", "Foreign", LSTMAttentionModel) # 이름 통일
+        ("CNN", "NASDAQ", CNNModel),             # CNN: 나스닥 제거
+        ("LSTM", "VKOSPI", LSTMModel),           # LSTM: VKOSPI 제거
+        ("CNN+LSTM", "KOSPI", CNNLSTMModel),     # CNN+LSTM: KOSPI 제거
+        ("LSTM_Attn", "VKOSPI", LSTMAttentionModel), # Attention: VKOSPI 제거
+        ("LSTM+", LSTM_PLUS_FEATURES, LSTMModel) # LSTM+: 특정 피처 선택
     ]
     
-    print("\n[Start Training & Saving Parameters]")
+    print(f"\n[Start Training & Saving Parameters] Seed: {CONFIG['seed']}")
     
-    for model_name, drop_group, ModelClass in scenarios:
-        print(f"\n>> Training {model_name} (Drop: {drop_group})...")
+    for model_name, feature_config, ModelClass in scenarios:
+        # 모델별 초기화 상태도 동일하게 맞추기 위해 시드 재설정
+        set_seed(CONFIG["seed"])
         
-        X, y, scaler_x_params, scaler_y_params, input_dim, feature_names = process_features(full_df, drop_group)
+        print(f"\n>> Training {model_name}...")
         
+        X, y, scaler_x_params, scaler_y_params, input_dim, feature_names = process_features(full_df, feature_config)
+        
+        # Model Init (Output=5)
         if model_name == "CNN":
-            model = ModelClass(input_dim, 5, 32, 5, CONFIG["seq_length"]) 
+            model = ModelClass(input_dim, CONFIG["predict_horizon"], 32, 5, CONFIG["seq_length"]) 
         elif model_name == "CNN+LSTM":
-            model = ModelClass(input_dim, 256, 1, 5, 32, 5)
+            model = ModelClass(input_dim, 256, 1, CONFIG["predict_horizon"], 32, 5)
         else:
-            model = ModelClass(input_dim, 256, 1, 5)
+            model = ModelClass(input_dim, 256, 1, CONFIG["predict_horizon"])
             
         model.to(CONFIG['device'])
         trained_model = train_model(model, X, y, CONFIG)
         
         save_path = f"{model_name}_params.pth"
         
-        # [수정] 수동 Scaler 파라미터 저장
         save_info = {
             "model_state_dict": trained_model.state_dict(),
-            "scaler_x": scaler_x_params, # {'min': array, 'range': array}
-            "scaler_y": scaler_y_params, # {'min': array, 'range': array}
+            "scaler_x": scaler_x_params, 
+            "scaler_y": scaler_y_params,
             "feature_names": feature_names,
             "input_dim": input_dim,
-            "drop_group": drop_group
+            "feature_config": feature_config
         }
         
         torch.save(save_info, save_path)
