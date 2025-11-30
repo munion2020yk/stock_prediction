@@ -10,26 +10,25 @@ import random
 # --- 설정 (Configuration) ---
 CONFIG = {
     "data_file": "KOSPI_dataset_final.csv",
-    # 11월 28일까지 학습 (미래 예측용)
     "data_start": "2013-08-06",
     "data_end": "2025-11-28",
     
     "seq_length": 5,          
     "predict_horizon": 5,     
     
-    "hidden_size": 256,
-    "num_layers": 1,
+    "hidden_size": 256,       # LSTM 은닉층 크기
+    "num_layers": 1,          # LSTM 층 수
     "num_classes": 1,         
     "cnn_num_layers": 1,
-    "num_filters": 32,
-    "kernel_size": 5,
+    "num_filters": 32,        # CNN 필터 수
+    "kernel_size": 5,         # CNN 커널 크기
     
     "batch_size": 256,
     "epochs": 100,            
     "learning_rate": 0.005, 
     "patience": 5,
     
-    "seed": 100, # [추가] 랜덤 시드 설정
+    "seed": 100, 
     
     "device": torch.device("cuda" if torch.cuda.is_available() else "cpu")
 }
@@ -203,7 +202,6 @@ def train_model(model, X_train, y_train, config):
     y_t = torch.FloatTensor(y_train).to(config['device'])
     
     dataset = TensorDataset(X_t, y_t)
-    # 시드 고정 효과를 위해 shuffle=True여도 순서가 동일하게 유지됨
     loader = DataLoader(dataset, batch_size=config["batch_size"], shuffle=True)
     
     optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"])
@@ -246,13 +244,32 @@ def main():
         
         X, y, scaler_x_params, scaler_y_params, input_dim, feature_names = process_features(full_df, feature_config)
         
-        # Model Init (Output=5)
+        # [수정] 하드코딩 제거 -> CONFIG 사용
         if model_name == "CNN":
-            model = ModelClass(input_dim, CONFIG["predict_horizon"], 32, 5, CONFIG["seq_length"]) 
+            model = ModelClass(
+                input_dim, 
+                CONFIG["predict_horizon"], 
+                CONFIG["num_filters"], 
+                CONFIG["kernel_size"], 
+                CONFIG["seq_length"]
+            ) 
         elif model_name == "CNN+LSTM":
-            model = ModelClass(input_dim, 256, 1, CONFIG["predict_horizon"], 32, 5)
+            model = ModelClass(
+                input_dim, 
+                CONFIG["hidden_size"], 
+                CONFIG["num_layers"], 
+                CONFIG["predict_horizon"], 
+                CONFIG["num_filters"], 
+                CONFIG["kernel_size"]
+            )
         else:
-            model = ModelClass(input_dim, 256, 1, CONFIG["predict_horizon"])
+            # LSTM, LSTM+, LSTM_Attn
+            model = ModelClass(
+                input_dim, 
+                CONFIG["hidden_size"], 
+                CONFIG["num_layers"], 
+                CONFIG["predict_horizon"]
+            )
             
         model.to(CONFIG['device'])
         trained_model = train_model(model, X, y, CONFIG)
