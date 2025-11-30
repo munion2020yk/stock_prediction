@@ -94,6 +94,7 @@ def predict_with_model(model_name, full_df, cutoff_date):
     pth_file = MODEL_FILES.get(model_name)
     if not os.path.exists(pth_file): return None
     
+    # weights_only=False 필수
     checkpoint = torch.load(pth_file, map_location=DEVICE, weights_only=False)
     input_dim = checkpoint['input_dim']
     feature_names = checkpoint['feature_names']
@@ -178,6 +179,8 @@ def main():
         
     target_dates = pd.date_range(start=predict_date, periods=5, freq='B')
     date_strs = target_dates.strftime('%Y-%m-%d')
+    
+    # 등락 비교를 위한 이전 종가 (11월 28일)
     last_real_price = df["KOSPI_Close"].loc[:cutoff_date].iloc[-1]
     
     # 2. 결과 표시 (텍스트) - LSTM+ 기준
@@ -216,18 +219,18 @@ def main():
     
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.caption("📉 모델별 예측 추세 비교")
+        st.caption("📉 모델별 예측 추세 비교 (시작일 기준)")
         fig, ax = plt.subplots(figsize=(10, 5))
         
-        # X축 데이터: [기준일(11/28), D+1, ..., D+5]
-        plot_dates = [df.index[df.index <= cutoff_date]] + list(target_dates)
+        # [수정] 그래프 데이터: 12월 1일 ~ 12월 5일만 사용 (이전 데이터 연결 X)
+        plot_dates = target_dates
         
         # 1) LSTM+ (메인, 굵은 빨강)
-        val_plus = [last_real_price] + list(pred_lstm_plus)
+        val_plus = pred_lstm_plus # 5개 값
         ax.plot(plot_dates, val_plus, marker='o', color='#d62728', linestyle='-', linewidth=3, label='LSTM+ (Main)')
         
         # 값 표시 (메인 모델만)
-        for date, val in zip(plot_dates[1:], val_plus[1:]):
+        for date, val in zip(plot_dates, val_plus):
             ax.text(date, val, f"{val:.0f}", ha='center', va='bottom', color='#d62728', fontsize=9, fontweight='bold')
             
         # 2) 비교 모델들 (얇은 점선)
@@ -242,15 +245,17 @@ def main():
         for name in compare_models:
             pred = predict_with_model(name, df, cutoff_date)
             if pred is not None:
-                vals = [last_real_price] + list(pred)
-                ax.plot(plot_dates, vals, marker='x', color=colors.get(name, 'gray'), linestyle='--', linewidth=1.5, label=name, alpha=0.7)
+                # 5개 예측값만 사용
+                ax.plot(plot_dates, pred, marker='x', color=colors.get(name, 'gray'), linestyle='--', linewidth=1.5, label=name, alpha=0.7)
 
-        # 기준선 (Ref Price)
+        # 기준선 (Ref Price: 11월 28일 종가)
         ax.axhline(y=last_real_price, color='gray', linestyle=':', linewidth=1, label=f'Ref: {last_real_price:,.0f}')
         
         ax.set_ylabel("KOSPI Index")
+        # 날짜 포맷팅
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
         ax.xaxis.set_major_locator(mdates.DayLocator())
+        
         ax.grid(True, alpha=0.3)
         ax.legend()
         
