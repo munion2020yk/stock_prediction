@@ -12,8 +12,9 @@ st.set_page_config(page_title="KOSPI Prediction Service", layout="wide")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 DATA_FILE = "KOSPI_dataset_final.csv"
+# 모델 파일 매핑
 MODEL_FILES = {
-    "CNN+LSTM": "CNN+LSTM_params.pth",
+    "CNN+LSTM": "CNN+LSTM_params.pth",  # 최상단에 위치
     "LSTM+": "LSTM+_params.pth",
     "LSTM": "LSTM_params.pth",
     "CNN": "CNN_params.pth",
@@ -94,6 +95,7 @@ def predict_with_model(model_name, full_df, cutoff_date):
     pth_file = MODEL_FILES.get(model_name)
     if not os.path.exists(pth_file): return None
     
+    # weights_only=False 필수 (numpy, dict 포함된 .pth 파일 로드 시)
     checkpoint = torch.load(pth_file, map_location=DEVICE, weights_only=False)
     input_dim = checkpoint['input_dim']
     feature_names = checkpoint['feature_names']
@@ -232,8 +234,10 @@ def main():
         ax.axhline(y=last_real_price, color='gray', linestyle=':', linewidth=1, label=f'Ref: {last_real_price:,.0f}')
         
         ax.set_ylabel("KOSPI Index")
+        # 날짜 포맷팅
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
         ax.xaxis.set_major_locator(mdates.DayLocator())
+        
         ax.grid(True, alpha=0.3)
         ax.legend()
         
@@ -242,6 +246,9 @@ def main():
     with col2:
         st.info(f"ℹ️ {selected_model_name} 모델 정보")
         
+        # 모델 설명: LSTM+는 화면상에서 'LSTM'으로 표시해달라는 요청을 반영하여 설명을 작성할 수도 있으나,
+        # 라디오 버튼 상에서는 'LSTM+'로 구분되어 있으므로 혼란을 피하기 위해 'LSTM+'에 대한 설명을 유지합니다.
+        # 만약 라디오 버튼의 라벨도 'LSTM'으로 바꾸고 싶으신 경우 추가 요청 부탁드립니다.
         descriptions = {
             "CNN+LSTM": "CNN으로 특징을 추출하고 LSTM으로 시계열을 학습한 하이브리드 모델입니다.",
             "LSTM+": "핵심 피처(KOSPI OHLCV, 선물, 환율 등)만 선별하여 학습한 고성능 모델입니다.",
