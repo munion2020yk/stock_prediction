@@ -13,10 +13,10 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 DATA_FILE = "KOSPI_dataset_final.csv"
 MODEL_FILES = {
+    "CNN+LSTM": "CNN+LSTM_params.pth",
     "LSTM+": "LSTM+_params.pth",
     "LSTM": "LSTM_params.pth",
     "CNN": "CNN_params.pth",
-    "CNN+LSTM": "CNN+LSTM_params.pth",
     "LSTM(Attention)": "LSTM_Attn_params.pth"
 }
 
@@ -94,7 +94,6 @@ def predict_with_model(model_name, full_df, cutoff_date):
     pth_file = MODEL_FILES.get(model_name)
     if not os.path.exists(pth_file): return None
     
-    # weights_only=False 필수
     checkpoint = torch.load(pth_file, map_location=DEVICE, weights_only=False)
     input_dim = checkpoint['input_dim']
     feature_names = checkpoint['feature_names']
@@ -141,7 +140,7 @@ def predict_with_model(model_name, full_df, cutoff_date):
 # --- 메인 앱 ---
 def main():
     st.title("📈 KOSPI Prediction Service")
-    st.markdown("핵심 모델 **LSTM+**를 중심으로 다양한 딥러닝 모델의 예측 결과를 비교 분석합니다.")
+    st.markdown("딥러닝 모델을 활용한 **KOSPI 향후 5일 지수 예측** 서비스입니다.")
 
     if not os.path.exists(DATA_FILE):
         st.error(f"데이터 파일({DATA_FILE}) 없음.")
@@ -159,37 +158,34 @@ def main():
     cutoff_date = pd.to_datetime(predict_date) - pd.Timedelta(days=1)
     
     st.sidebar.markdown("---")
-    st.sidebar.header("모델 비교 (Comparison)")
-    st.sidebar.info("메인 모델(LSTM+)은 항상 표시됩니다.")
     
-    # 체크박스 (나머지 4개 모델)
-    show_lstm = st.sidebar.checkbox("LSTM", value=False)
-    show_cnn = st.sidebar.checkbox("CNN", value=False)
-    show_cnnlstm = st.sidebar.checkbox("CNN+LSTM", value=False)
-    show_attn = st.sidebar.checkbox("LSTM(Attention)", value=False)
+    # [수정] 라디오 박스 모델 선택 (CNN+LSTM 최상단)
+    # 순서: CNN+LSTM -> LSTM+ -> LSTM -> CNN -> LSTM(Attention)
+    model_options = ["CNN+LSTM", "LSTM+", "LSTM", "CNN", "LSTM(Attention)"]
+    selected_model_name = st.sidebar.radio("예측 모델 선택", model_options, index=0)
     
     # --- 메인 로직 ---
     
-    # 1. 메인 모델 (LSTM+) 예측
-    pred_lstm_plus = predict_with_model("LSTM+", df, cutoff_date)
+    # 선택된 모델 예측 수행
+    pred_prices = predict_with_model(selected_model_name, df, cutoff_date)
     
-    if pred_lstm_plus is None:
-        st.error("예측에 실패했습니다. 데이터 기간이나 모델 파일을 확인해주세요.")
+    if pred_prices is None:
+        st.error(f"'{selected_model_name}' 예측에 실패했습니다. 데이터 기간이나 모델 파일을 확인해주세요.")
         st.stop()
         
     target_dates = pd.date_range(start=predict_date, periods=5, freq='B')
     date_strs = target_dates.strftime('%Y-%m-%d')
     
-    # 등락 비교를 위한 이전 종가 (11월 28일)
+    # 전일 종가 (등락 계산용)
     last_real_price = df["KOSPI_Close"].loc[:cutoff_date].iloc[-1]
     
-    # 2. 결과 표시 (텍스트) - LSTM+ 기준
-    st.subheader(f"🚀 LSTM+ 예측 결과 ({predict_date} ~)")
+    # 1. 결과 표시 (텍스트)
+    st.subheader(f"🚀 {selected_model_name} 예측 결과 ({predict_date} ~)")
     
     cols = st.columns(5)
     prev_price = last_real_price
     
-    for i, (col, date, price) in enumerate(zip(cols, date_strs, pred_lstm_plus)):
+    for i, (col, date, price) in enumerate(zip(cols, date_strs, pred_prices)):
         diff = price - prev_price
         
         if diff > 0:
@@ -214,62 +210,46 @@ def main():
             """, unsafe_allow_html=True)
         prev_price = price
         
-    # 3. 그래프 (비교 기능 포함)
+    # 2. 그래프
     st.markdown("---")
     
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.caption("📉 모델별 예측 추세 비교 (시작일 기준)")
+        st.caption("📉 예측 추세 그래프")
         fig, ax = plt.subplots(figsize=(10, 5))
         
-        # [수정] 그래프 데이터: 12월 1일 ~ 12월 5일만 사용 (이전 데이터 연결 X)
         plot_dates = target_dates
+        plot_values = pred_prices
         
-        # 1) LSTM+ (메인, 굵은 빨강)
-        val_plus = pred_lstm_plus # 5개 값
-        ax.plot(plot_dates, val_plus, marker='o', color='#d62728', linestyle='-', linewidth=3, label='LSTM+ (Main)')
+        # 선택된 모델 그래프
+        ax.plot(plot_dates, plot_values, marker='o', color='#d62728', linestyle='-', linewidth=3, label=selected_model_name)
         
-        # 값 표시 (메인 모델만)
-        for date, val in zip(plot_dates, val_plus):
+        # 값 표시
+        for date, val in zip(plot_dates, plot_values):
             ax.text(date, val, f"{val:.0f}", ha='center', va='bottom', color='#d62728', fontsize=9, fontweight='bold')
             
-        # 2) 비교 모델들 (얇은 점선)
-        compare_models = []
-        if show_lstm: compare_models.append("LSTM")
-        if show_cnn: compare_models.append("CNN")
-        if show_cnnlstm: compare_models.append("CNN+LSTM")
-        if show_attn: compare_models.append("LSTM(Attention)")
-        
-        colors = {'LSTM': 'blue', 'CNN': 'green', 'CNN+LSTM': 'orange', 'LSTM(Attention)': 'purple'}
-        
-        for name in compare_models:
-            pred = predict_with_model(name, df, cutoff_date)
-            if pred is not None:
-                # 5개 예측값만 사용
-                ax.plot(plot_dates, pred, marker='x', color=colors.get(name, 'gray'), linestyle='--', linewidth=1.5, label=name, alpha=0.7)
-
-        # 기준선 (Ref Price: 11월 28일 종가)
+        # 기준선 (Ref Price)
         ax.axhline(y=last_real_price, color='gray', linestyle=':', linewidth=1, label=f'Ref: {last_real_price:,.0f}')
         
         ax.set_ylabel("KOSPI Index")
-        # 날짜 포맷팅
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
         ax.xaxis.set_major_locator(mdates.DayLocator())
-        
         ax.grid(True, alpha=0.3)
         ax.legend()
         
         st.pyplot(fig)
         
     with col2:
-        st.info("ℹ️ 모델 설명")
-        st.markdown("""
-        * **LSTM+**: 핵심 피처(KOSPI OHLCV, 선물, 환율 등)만 선별하여 학습한 고성능 모델
-        * **LSTM**: 전체 피처 사용 (VKOSPI 제외)
-        * **CNN**: 나스닥 제외, 합성곱 신경망
-        * **CNN+LSTM**: KOSPI 지수 제외 하이브리드
-        * **LSTM(Attn)**: 어텐션 메커니즘 적용
-        """)
+        st.info(f"ℹ️ {selected_model_name} 모델 정보")
+        
+        descriptions = {
+            "CNN+LSTM": "CNN으로 특징을 추출하고 LSTM으로 시계열을 학습한 하이브리드 모델입니다.",
+            "LSTM+": "핵심 피처(KOSPI OHLCV, 선물, 환율 등)만 선별하여 학습한 고성능 모델입니다.",
+            "LSTM": "전통적인 시계열 예측 모델로, 전체 피처(VKOSPI 제외)를 사용합니다.",
+            "CNN": "1D Convolution을 사용하여 시계열 데이터의 국소적 패턴을 학습합니다.",
+            "LSTM(Attention)": "Attention 메커니즘을 적용하여 중요한 시점에 가중치를 둡니다."
+        }
+        st.write(descriptions.get(selected_model_name, ""))
 
 if __name__ == "__main__":
     main()
