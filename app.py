@@ -208,4 +208,43 @@ def main():
                 </div>
             """, unsafe_allow_html=True)
             
-        prev_price =
+        prev_price = price
+    
+    st.markdown("---")
+    st.caption("📉 예측 추세 그래프 (참조용)")
+    
+    col_l, col_r = st.columns([2, 1]) 
+    
+    _, mid_col, _ = st.columns([1, 4, 1])
+    
+    with mid_col:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        
+        plot_dates = target_dates
+        plot_values = pred_prices
+        
+        ax.plot(plot_dates, plot_values, marker='o', color='#ff4b4b', linestyle='-', linewidth=2, label='Forecast')
+        
+        # 값 표시
+        for date, val in zip(plot_dates, plot_values):
+            ax.text(date, val, f"{val:.0f}", ha='center', va='bottom', color='#ff4b4b', fontsize=9, fontweight='bold')
+
+        ax.set_title("5-Day KOSPI Forecast", fontsize=12)
+        ax.set_ylabel("Index")
+        
+        # 날짜 포맷팅
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+        ax.xaxis.set_major_locator(mdates.DayLocator())
+        
+        ax.tick_params(axis='x', labelsize=9)
+        ax.tick_params(axis='y', labelsize=9)
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # 테두리 제거 (깔끔하게)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        
+        st.pyplot(fig)
+
+if __name__ == "__main__":
+    main()
