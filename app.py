@@ -99,12 +99,12 @@ def load_model_checkpoint(model_name):
     horizon = 5
     
     if model_name == "CNN":
-        model = CNNModel(input_dim, horizon, 32, 5, 5) 
+        model = CNNModel(input_dim, horizon, 32, 5, 5) # seq_len=5 fixed
     elif model_name == "CNN+LSTM":
         model = CNNLSTMModel(input_dim, 256, 1, horizon, 32, 5)
     elif model_name == "LSTM(Attention)":
         model = LSTMAttentionModel(input_dim, 256, 1, horizon)
-    else: 
+    else: # LSTM
         model = LSTMModel(input_dim, 256, 1, horizon)
         
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -155,14 +155,17 @@ def main():
         st.error("과거 데이터 부족.")
         st.stop()
         
+    # Scaling (X)
     scaler_x = checkpoint['scaler_x'] 
     input_raw = input_df.values
     input_scaled = (input_raw - scaler_x['min']) / scaler_x['range']
     
+    # Predict
     input_tensor = torch.FloatTensor(input_scaled).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         pred_scaled = model(input_tensor).cpu().numpy().flatten()
         
+    # Inverse Scaling (y)
     scaler_y = checkpoint['scaler_y']
     pred_prices = (pred_scaled * scaler_y['range']) + scaler_y['min']
 
@@ -174,8 +177,7 @@ def main():
     
     last_real_price = input_df["KOSPI_Close"].iloc[-1]
     
-    # [수정] 큰 텍스트로 예측 결과 표시
-    # 5일치 결과를 가로로 나열
+    # [수정] 큰 텍스트로 예측 결과 표시 (상승: 빨간색, 하락: 파란색)
     cols = st.columns(5)
     
     prev_price = last_real_price
@@ -184,50 +186,26 @@ def main():
         diff = price - prev_price
         diff_str = f"{diff:+.2f}"
         
+        # 색상 설정 (상승: 빨강, 하락: 파랑)
+        if diff > 0:
+            color = "#d62728"  # 빨강
+            arrow = "▲"
+        elif diff < 0:
+            color = "#1f77b4"  # 파랑
+            arrow = "▼"
+        else:
+            color = "gray"
+            arrow = "-"
+        
         with col:
-            st.metric(
-                label=f"{date} (D+{i+1})", 
-                value=f"{price:,.2f}", 
-                delta=diff_str
-            )
-        prev_price = price
-    
-    st.markdown("---")
-    st.caption("📉 예측 추세 그래프 (참조용)")
-    
-    col_l, col_r = st.columns([2, 1]) # 그래프를 왼쪽에 크게, 설명은 오른쪽? 아니면 중앙 정렬
-    
-    # 중앙 정렬을 위해 빈 컬럼 사용
-    _, mid_col, _ = st.columns([1, 4, 1])
-    
-    with mid_col:
-        fig, ax = plt.subplots(figsize=(8, 4))
-        
-        plot_dates = target_dates
-        plot_values = pred_prices
-        
-        ax.plot(plot_dates, plot_values, marker='o', color='#ff4b4b', linestyle='-', linewidth=2, label='Forecast')
-        
-        # 값 표시
-        for date, val in zip(plot_dates, plot_values):
-            ax.text(date, val, f"{val:.0f}", ha='center', va='bottom', color='#ff4b4b', fontsize=9, fontweight='bold')
-
-        ax.set_title("5-Day KOSPI Forecast", fontsize=12)
-        ax.set_ylabel("Index")
-        
-        # 날짜 포맷팅
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
-        ax.xaxis.set_major_locator(mdates.DayLocator())
-        
-        ax.tick_params(axis='x', labelsize=9)
-        ax.tick_params(axis='y', labelsize=9)
-        ax.grid(True, alpha=0.3, linestyle='--')
-        
-        # 테두리 제거 (깔끔하게)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        
-        st.pyplot(fig)
-
-if __name__ == "__main__":
-    main()
+            st.markdown(f"""
+                <div style="text-align: center;">
+                    <div style="font-size: 14px; color: gray;">{date} (D+{i+1})</div>
+                    <div style="font-size: 24px; font-weight: bold;">{price:,.2f}</div>
+                    <div style="font-size: 16px; color: {color};">
+                        {arrow} {abs(diff):.2f}
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+        prev_price =
