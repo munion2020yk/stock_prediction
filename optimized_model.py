@@ -5,10 +5,10 @@ from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import os
+import random  # random 모듈 추가
 
 # 폰트 설정 (코랩/영문 환경 호환)
 plt.rcParams['font.family'] = 'DejaVu Sans'
@@ -40,6 +40,8 @@ CONFIG = {
     "learning_rate": 0.005,
     "patience": 5,
     
+    "seed": 100, # [추가] 랜덤 시드 설정
+    
     "device": torch.device("cuda" if torch.cuda.is_available() else "cpu")
 }
 
@@ -63,6 +65,19 @@ LSTM_PLUS_FEATURES = [
 ]
 
 print(f"Using Device: {CONFIG['device']}")
+
+# --- [추가] 랜덤 시드 고정 함수 ---
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed) # 멀티 GPU 사용 시
+        # CuDNN 결정론적 모드 설정 (속도는 느려질 수 있음)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    print(f"Random Seed set to: {seed}")
 
 # --- 2. Data Processing Utils ---
 def load_data(config):
@@ -200,6 +215,8 @@ def train_model(model, X_train, y_train, config):
     y_t = torch.FloatTensor(y_train).unsqueeze(1).to(config['device'])
     
     dataset = TensorDataset(X_t, y_t)
+    # [수정] DataLoader의 shuffle을 False로 고정하면 순서가 보장되지만, 
+    # 학습 효과를 위해 True를 유지하되 시드 고정으로 동일한 셔플링을 보장함.
     loader = DataLoader(dataset, batch_size=config["batch_size"], shuffle=True)
     
     optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"])
@@ -253,6 +270,9 @@ def plot_comparison(model_name, feature_config, dates, y_true, y_pred, rmse):
 
 # --- 6. Main Logic ---
 def main():
+    # [추가] 시드 고정 실행
+    set_seed(CONFIG["seed"])
+    
     print("Loading Data...")
     full_df = load_data(CONFIG)
     
@@ -270,6 +290,10 @@ def main():
     rmse_results = []
 
     for model_name, feature_config, ModelClass in scenarios:
+        # 모델별로 시드를 다시 초기화할지, 아니면 전체 시나리오를 하나의 시퀀스로 볼지 결정해야 함.
+        # 모델 초기화 가중치가 동일하게 시작되도록 루프 내에서 시드 재설정하는 것이 좋음.
+        set_seed(CONFIG["seed"]) 
+        
         print(f"\n>> Processing {model_name}...")
         
         # 1. Prepare Data
