@@ -310,11 +310,11 @@ def main():
 
         # 2. Init Model
         if model_name == "CNN":
-            model = ModelClass(input_dim, 1, 32, 5, CONFIG["seq_length"]) 
+            model = ModelClass(input_dim, 1, CONFIG["num_filters"], CONFIG["predict_horizon"], CONFIG["seq_length"]) 
         elif model_name == "CNN+LSTM":
-            model = ModelClass(input_dim, 256, 1, 1, 32, 5)
+            model = ModelClass(input_dim, CONFIG["batch_size"], CONFIG["num_layers"], 1, CONFIG["num_filters"], CONFIG["edict_horizon"])
         else:
-            model = ModelClass(input_dim, 256, 1, 1)
+            model = ModelClass(input_dim, CONFIG["batch_size"], CONFIG["num_layers"], 1)
             
         model.to(CONFIG['device'])
         
