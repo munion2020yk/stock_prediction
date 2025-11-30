@@ -220,7 +220,7 @@ def main():
         fig, ax = plt.subplots(figsize=(10, 5))
         
         # X축 데이터: [기준일(11/28), D+1, ..., D+5]
-        plot_dates = [df.index[df.index <= cutoff_date][-1]] + list(target_dates)
+        plot_dates = [df.index[df.index <= cutoff_date]] + list(target_dates)
         
         # 1) LSTM+ (메인, 굵은 빨강)
         val_plus = [last_real_price] + list(pred_lstm_plus)
