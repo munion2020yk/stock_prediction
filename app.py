@@ -163,7 +163,8 @@ def main():
     
     # [수정] 라디오 박스 모델 선택 (CNN+LSTM 최상단)
     # 순서: CNN+LSTM -> LSTM+ -> LSTM -> CNN -> LSTM(Attention)
-    model_options = ["CNN+LSTM", "LSTM+", "LSTM", "CNN", "LSTM(Attention)"]
+    # model_options = ["CNN+LSTM", "LSTM+", "LSTM", "CNN", "LSTM(Attention)"]
+    model_options = ["CNN+LSTM", "LSTM+", "CNN"]
     selected_model_name = st.sidebar.radio("예측 모델 선택", model_options, index=0)
     
     # --- 메인 로직 ---
