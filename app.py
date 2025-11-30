@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates # 날짜 포맷팅을 위해 추가
+import matplotlib.dates as mdates 
 import os
 
 # --- 설정 ---
@@ -99,12 +99,12 @@ def load_model_checkpoint(model_name):
     horizon = 5
     
     if model_name == "CNN":
-        model = CNNModel(input_dim, horizon, 32, 5, 5) # seq_len=5 fixed
+        model = CNNModel(input_dim, horizon, 32, 5, 5) 
     elif model_name == "CNN+LSTM":
         model = CNNLSTMModel(input_dim, 256, 1, horizon, 32, 5)
     elif model_name == "LSTM(Attention)":
         model = LSTMAttentionModel(input_dim, 256, 1, horizon)
-    else: # LSTM
+    else: 
         model = LSTMModel(input_dim, 256, 1, horizon)
         
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -117,35 +117,6 @@ def load_model_checkpoint(model_name):
 def main():
     st.title("📈 KOSPI Prediction Service")
     st.markdown("딥러닝 모델을 활용한 **KOSPI 향후 5일 지수 예측** 서비스입니다.")
-
-    # 폰트 크기 상태 관리
-    if 'font_size' not in st.session_state:
-        st.session_state.font_size = 20  # 기본 폰트 크기
-
-    # 폰트 조절 버튼 (사이드바 또는 메인 상단)
-    col_btn1, col_btn2, _ = st.columns([1, 1, 8])
-    with col_btn1:
-        if st.button("➕ 글자 크게"):
-            st.session_state.font_size += 2
-    with col_btn2:
-        if st.button("➖ 글자 작게"):
-            st.session_state.font_size = max(10, st.session_state.font_size - 2)
-
-    # CSS 스타일 동적 적용
-    st.markdown(f"""
-        <style>
-        div[data-testid="stDataFrame"] div[data-testid="stTable"] {{
-            font-size: {st.session_state.font_size}px !important;
-        }}
-        div[data-testid="stDataFrame"] th {{
-            font-size: {st.session_state.font_size}px !important;
-        }}
-        div[data-testid="stDataFrame"] td {{
-            font-size: {st.session_state.font_size}px !important;
-            line-height: 1.5 !important;
-        }}
-        </style>
-    """, unsafe_allow_html=True)
 
     if not os.path.exists(DATA_FILE):
         st.error(f"데이터 파일({DATA_FILE})을 찾을 수 없습니다.")
@@ -184,17 +155,14 @@ def main():
         st.error("과거 데이터 부족.")
         st.stop()
         
-    # Scaling (X)
     scaler_x = checkpoint['scaler_x'] 
     input_raw = input_df.values
     input_scaled = (input_raw - scaler_x['min']) / scaler_x['range']
     
-    # Predict
     input_tensor = torch.FloatTensor(input_scaled).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         pred_scaled = model(input_tensor).cpu().numpy().flatten()
         
-    # Inverse Scaling (y)
     scaler_y = checkpoint['scaler_y']
     pred_prices = (pred_scaled * scaler_y['range']) + scaler_y['min']
 
@@ -204,52 +172,60 @@ def main():
     
     st.subheader(f"📊 {selected_model_name} 예측 결과 ({predict_date} ~)")
     
-    res_df = pd.DataFrame({
-        "날짜": date_strs,
-        "예측 지수 (Pt)": [f"{p:,.2f}" for p in pred_prices], 
-        "등락": ["-" for _ in range(5)]
-    })
-    
     last_real_price = input_df["KOSPI_Close"].iloc[-1]
-    diffs = []
-    prev = last_real_price
-    for p in pred_prices:
-        d = p - prev
-        sign = "🔺" if d > 0 else "🔻" if d < 0 else "-"
-        diffs.append(f"{sign} {abs(d):.2f}")
-        prev = p
-    res_df["등락"] = diffs
     
-    st.dataframe(res_df, use_container_width=True, hide_index=True, height=300)
+    # [수정] 큰 텍스트로 예측 결과 표시
+    # 5일치 결과를 가로로 나열
+    cols = st.columns(5)
+    
+    prev_price = last_real_price
+    
+    for i, (col, date, price) in enumerate(zip(cols, date_strs, pred_prices)):
+        diff = price - prev_price
+        diff_str = f"{diff:+.2f}"
+        
+        with col:
+            st.metric(
+                label=f"{date} (D+{i+1})", 
+                value=f"{price:,.2f}", 
+                delta=diff_str
+            )
+        prev_price = price
     
     st.markdown("---")
     st.caption("📉 예측 추세 그래프 (참조용)")
     
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        fig, ax = plt.subplots(figsize=(6, 3))
+    col_l, col_r = st.columns([2, 1]) # 그래프를 왼쪽에 크게, 설명은 오른쪽? 아니면 중앙 정렬
+    
+    # 중앙 정렬을 위해 빈 컬럼 사용
+    _, mid_col, _ = st.columns([1, 4, 1])
+    
+    with mid_col:
+        fig, ax = plt.subplots(figsize=(8, 4))
         
-        # [수정] 12월 1일 ~ 5일만 그리기 (이전 데이터 연결 X)
         plot_dates = target_dates
         plot_values = pred_prices
         
-        ax.plot(plot_dates, plot_values, marker='o', color='red', linestyle='--', linewidth=1.5, label='Prediction')
+        ax.plot(plot_dates, plot_values, marker='o', color='#ff4b4b', linestyle='-', linewidth=2, label='Forecast')
         
-        # 값 어노테이션 추가
-        for i, (date, val) in enumerate(zip(plot_dates, plot_values)):
-            ax.text(date, val, f"{val:.0f}", ha='center', va='bottom', color='red', fontsize=8, fontweight='bold')
+        # 값 표시
+        for date, val in zip(plot_dates, plot_values):
+            ax.text(date, val, f"{val:.0f}", ha='center', va='bottom', color='#ff4b4b', fontsize=9, fontweight='bold')
 
-        ax.set_title("5-Day Forecast Trend", fontsize=10)
-        ax.set_ylabel("KOSPI Index")
+        ax.set_title("5-Day KOSPI Forecast", fontsize=12)
+        ax.set_ylabel("Index")
         
-        # [수정] x축 날짜 포맷팅 (YYYY-MM-DD)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        ax.xaxis.set_major_locator(mdates.DayLocator()) # 매일 표시
+        # 날짜 포맷팅
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+        ax.xaxis.set_major_locator(mdates.DayLocator())
         
-        ax.tick_params(axis='x', labelsize=8, rotation=45)
-        ax.tick_params(axis='y', labelsize=8)
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
+        ax.tick_params(axis='x', labelsize=9)
+        ax.tick_params(axis='y', labelsize=9)
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # 테두리 제거 (깔끔하게)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
         
         st.pyplot(fig)
 
